@@ -1,0 +1,929 @@
+---
+title: "DIVVY BIKE SHARE - COMPREHENSIVE DATA ANALYSIS"
+subtitle: "Google Data Analytics Professional Certificate - Capstone Project"
+author: "Kevin Galeano"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+    fig_width: 12
+    fig_height: 8
+    fig_caption: true
+    df_print: paged
+  pdf_document:
+    toc: true
+    number_sections: true
+    fig_width: 12
+    fig_height: 8
+---
+
+```{r setup, include=FALSE}
+# =============================================================================
+# SETUP AND CONFIGURATION
+# =============================================================================
+
+# Configure working directory for all chunks
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+
+# Set global chunk options
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 16,
+  fig.height = 12,
+  dpi = 300
+)
+
+# Load required libraries
+library(tidyverse)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(lubridate)
+library(scales)
+library(gridExtra)
+library(grid)
+library(viridis)
+library(ggthemes)
+library(DT)
+library(knitr)
+library(kableExtra)
+
+# Configure professional theme with cross-platform font compatibility
+theme_set(theme_minimal() +
+          theme(
+            text = element_text(family = "sans", size = 12),
+            plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+            plot.subtitle = element_text(size = 14, hjust = 0.5),
+            axis.title = element_text(size = 12, face = "bold"),
+            axis.text = element_text(size = 10),
+            legend.title = element_text(size = 12, face = "bold"),
+            legend.text = element_text(size = 10),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_line(color = "gray90", linewidth = 0.3)
+          ))
+
+# Define professional color palette for consistent visualizations
+divvy_colors <- c(
+  "#FF6B6B",  # Coral red
+  "#4ECDC4",  # Turquoise
+  "#45B7D1",  # Light blue
+  "#96CEB4",  # Mint green
+  "#FFEAA7",  # Soft yellow
+  "#DDA0DD",  # Lavender
+  "#98D8C8",  # Aqua green
+  "#FF8A80",  # Light coral
+  "#81C784",  # Light green
+  "#64B5F6",  # Light blue
+  "#FFB74D",  # Orange
+  "#BA68C8"   # Purple
+)
+```
+
+# EXECUTIVE SUMMARY
+
+This report presents a comprehensive analysis of the Divvy bike-sharing system, based on data from over 5.4 million trips. Key findings include usage patterns, user behavior, and opportunities for service improvement.
+
+## Analysis Objectives
+
+-   Identify temporal and spatial usage patterns
+-   Analyze differences between member and casual users
+-   Evaluate operational efficiency of the system
+-   Provide strategic recommendations
+
+# DATA LOADING, CLEANING AND COMBINING
+
+```{r load-data}
+# =============================================================================
+# DATA LOADING AND PREPROCESSING
+# =============================================================================
+
+# Define file paths
+processed_file_path <- "data/processed/divvy_combined_data.csv"
+
+# Check if processed dataset exists, otherwise create from raw files
+if (!file.exists(processed_file_path)) {
+  cat("Processing raw CSV files...\n")
+  
+  # Get all CSV files from raw directory
+  raw_file_paths <- list.files("data/raw", pattern = "\\.csv$", full.names = TRUE)
+  raw_file_paths <- sort(raw_file_paths)  # Ensure consistent processing order
+  
+  cat("Found", length(raw_file_paths), "CSV files to process\n")
+  
+  # Initialize list to store processed dataframes
+  processed_dataframes <- list()
+  
+  # Process each raw file
+  for (file_index in seq_along(raw_file_paths)) {
+    current_file_path <- raw_file_paths[file_index]
+    cat("Processing file", file_index, "/", length(raw_file_paths), ":", basename(current_file_path), "\n")
+    
+    tryCatch({
+      # Read CSV file with proper encoding
+      temp_dataframe <- read_csv(current_file_path, show_col_types = FALSE)
+      
+      # Perform data cleaning and validation
+      temp_dataframe <- temp_dataframe %>%
+        drop_na(ride_id, started_at, ended_at)  # Remove records with missing essential data
+      
+      # Convert datetime columns to proper format
+      temp_dataframe <- temp_dataframe %>%
+        mutate(
+          started_at = as_datetime(started_at),
+          ended_at = as_datetime(ended_at)
+        )
+      
+      # Calculate trip duration and apply data quality filters
+      temp_dataframe <- temp_dataframe %>%
+        mutate(trip_duration_minutes = as.numeric(difftime(ended_at, started_at, units = "mins"))) %>%
+        filter(trip_duration_minutes > 0, trip_duration_minutes <= 24*60)  # Remove invalid trips
+      
+      # Standardize station names - replace missing values with "Unknown"
+      temp_dataframe <- temp_dataframe %>%
+        mutate(
+          start_station_name = ifelse(is.na(start_station_name) | start_station_name == "", "Unknown", start_station_name),
+          end_station_name = ifelse(is.na(end_station_name) | end_station_name == "", "Unknown", end_station_name)
+        )
+      
+      # Create binary membership indicator
+      temp_dataframe <- temp_dataframe %>%
+        mutate(membership_indicator = as.integer(member_casual == "member"))
+      
+      processed_dataframes[[file_index]] <- temp_dataframe
+      cat("Processed", format(nrow(temp_dataframe), big.mark = ","), "records from", basename(current_file_path), "\n")
+      
+    }, error = function(e) {
+      cat("Error processing", current_file_path, ":", conditionMessage(e), "\n")
+    })
+  }
+  
+  # Combine all processed dataframes into single dataset
+  if (length(processed_dataframes) > 0) {
+    divvy_dataset <- bind_rows(processed_dataframes)
+    cat("Combined", format(nrow(divvy_dataset), big.mark = ","), "total records from", length(processed_dataframes), "files\n")
+    
+    # Create output directory and save processed dataset
+    if (!dir.exists("data/processed")) {
+      dir.create("data/processed", recursive = TRUE)
+    }
+    write_csv(divvy_dataset, processed_file_path)
+    cat("Saved processed dataset to", processed_file_path, "\n")
+  } else {
+    stop("No data files were successfully processed")
+  }
+  
+} else {
+  cat("Loading existing processed dataset...\n")
+  divvy_dataset <- read_csv(processed_file_path, show_col_types = FALSE)
+}
+
+# =============================================================================
+# DATA FEATURE ENGINEERING
+# =============================================================================
+
+# Create temporal features for analysis
+divvy_dataset <- divvy_dataset %>%
+  mutate(
+    started_at = as_datetime(started_at),
+    ended_at = as_datetime(ended_at),
+    start_hour = hour(started_at),
+    day_of_week = wday(started_at, label = TRUE, abbr = FALSE),
+    month = month(started_at, label = TRUE, abbr = FALSE),
+    date = as_date(started_at)
+  )
+
+# Ensure membership indicator exists
+if (!"membership_indicator" %in% colnames(divvy_dataset)) {
+  divvy_dataset <- divvy_dataset %>%
+    mutate(membership_indicator = as.integer(member_casual == "member"))
+}
+
+# =============================================================================
+# DATASET SUMMARY STATISTICS
+# =============================================================================
+
+# Display comprehensive dataset summary
+cat("Dataset Summary:\n")
+cat("Total records:", format(nrow(divvy_dataset), big.mark = ","), "\n")
+cat("Analysis period:", format(min(divvy_dataset$started_at), "%d/%m/%Y"), "-", format(max(divvy_dataset$started_at), "%d/%m/%Y"), "\n")
+cat("Average trip duration:", round(mean(divvy_dataset$trip_duration_minutes), 1), "minutes\n")
+cat("Member user percentage:", round(mean(divvy_dataset$membership_indicator) * 100, 1), "%\n")
+
+# Analyze data quality for station information
+unknown_start_stations <- sum(divvy_dataset$start_station_name == "Unknown")
+unknown_end_stations <- sum(divvy_dataset$end_station_name == "Unknown")
+
+cat("Data quality assessment - Unknown stations:\n")
+cat("  Start stations:", format(unknown_start_stations, big.mark = ","), 
+    paste0("(", round(unknown_start_stations/nrow(divvy_dataset)*100, 2), "%)"), "\n")
+cat("  End stations:", format(unknown_end_stations, big.mark = ","), 
+    paste0("(", round(unknown_end_stations/nrow(divvy_dataset)*100, 2), "%)"), "\n")
+```
+
+# KEY PERFORMANCE INDICATORS
+
+```{r calculate-metrics}
+# =============================================================================
+# KPI CALCULATIONS
+# =============================================================================
+
+# Calculate core business metrics
+total_trips <- nrow(divvy_dataset)
+member_user_percentage <- mean(divvy_dataset$membership_indicator) * 100
+average_trip_duration <- mean(divvy_dataset$trip_duration_minutes)
+total_usage_hours <- sum(divvy_dataset$trip_duration_minutes) / 60
+
+# Calculate operational efficiency metrics
+analysis_period_days <- as.numeric(difftime(max(divvy_dataset$started_at), min(divvy_dataset$started_at), units = "days"))
+daily_trip_efficiency <- total_trips / analysis_period_days
+
+# Calculate station utilization metrics
+station_utilization_data <- divvy_dataset %>%
+  filter(start_station_name != "Unknown") %>%
+  group_by(start_station_name) %>%
+  summarise(trips_per_station = n()) %>%
+  ungroup()
+
+average_station_efficiency <- mean(station_utilization_data$trips_per_station)
+total_active_stations <- n_distinct(station_utilization_data$start_station_name)
+
+# Calculate user satisfaction metrics
+optimal_duration_trips <- divvy_dataset %>%
+  filter(trip_duration_minutes >= 5, trip_duration_minutes <= 60) %>%
+  nrow()
+
+user_satisfaction_rate <- optimal_duration_trips / total_trips * 100
+
+# Create comprehensive metrics summary table
+system_metrics_table <- data.frame(
+  Metric = c(
+    "Total Trips",
+    "Member User Percentage",
+    "Average Trip Duration",
+    "Total Usage Hours",
+    "Daily Trip Efficiency",
+    "Average Station Efficiency",
+    "User Satisfaction Rate"
+  ),
+  Value = c(
+    format(total_trips, big.mark = ","),
+    paste0(round(member_user_percentage, 1), "%"),
+    paste0(round(average_trip_duration, 1), " min"),
+    paste0(round(total_usage_hours/1000, 1), "K hours"),
+    paste0(round(daily_trip_efficiency, 0), " trips/day"),
+    paste0(round(average_station_efficiency, 0), " trips/station"),
+    paste0(round(user_satisfaction_rate, 1), "%")
+  ),
+  Description = c(
+    "Total number of completed trips",
+    "Proportion of member users in the system",
+    "Average trip duration across all users",
+    "Total system usage time in hours",
+    "Average trips completed per day",
+    "Average trips per active station",
+    "Percentage of trips with optimal duration (5-60 min)"
+  )
+)
+
+# Display formatted metrics table
+kable(system_metrics_table, 
+      caption = "KEY DIVVY SYSTEM METRICS",
+      align = c("l", "c", "l")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), 
+                full_width = TRUE,
+                font_size = 12)
+```
+
+# STRATEGIC KPI DASHBOARD
+
+```{r kpi-visualization, fig.height=20}
+# =============================================================================
+# STRATEGIC KPI DASHBOARD CREATION
+# =============================================================================
+
+# Calculate daily trip statistics for KPI visualization
+daily_trip_statistics <- divvy_dataset %>%
+  group_by(date) %>%
+  summarise(daily_trips = n()) %>%
+  ungroup()
+
+minimum_daily_trips <- min(daily_trip_statistics$daily_trips)
+maximum_daily_trips <- max(daily_trip_statistics$daily_trips)
+
+# Calculate station utilization statistics
+station_trip_statistics <- divvy_dataset %>%
+  filter(start_station_name != "Unknown") %>%
+  group_by(start_station_name) %>%
+  summarise(trips_per_station = n()) %>%
+  ungroup()
+
+minimum_station_trips <- min(station_trip_statistics$trips_per_station)
+maximum_station_trips <- max(station_trip_statistics$trips_per_station)
+
+# Create KPI dashboard with individual plots
+kpi_plot1 <- ggplot(data.frame(
+  category = factor(c("Min", "Avg", "Max"), levels = c("Min", "Avg", "Max")),
+  value = c(min_daily, round(mean(daily_rides_stats$daily_rides)), max_daily)
+), aes(x = category, y = value, fill = category)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = format(value, big.mark = ",")), 
+            vjust = -0.5, size = 6, fontface = "bold") +
+  scale_fill_manual(values = divvy_colors[1:3]) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    title = "DAILY RIDES VOLUME\nMin/Average/Max Daily Rides",
+    x = NULL,
+    y = "Rides per Day"
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5, margin = margin(b = 40)),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 14),
+    legend.position = "none",
+    plot.margin = margin(t = 70, r = 35, b = 15, l = 35)
+  )
+
+# User type distribution pie chart
+user_dist_data <- data.frame(
+  type = c("Members", "Casual"),
+  percentage = c(member_percentage, 100 - member_percentage)
+)
+
+kpi_plot2 <- ggplot(user_dist_data, aes(x = "", y = percentage, fill = type)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = paste0(round(percentage, 1), "%\n", type)), 
+            position = position_stack(vjust = 0.5), 
+            color = "white", fontface = "bold", size = 5) +
+  scale_fill_manual(values = divvy_colors[2:3]) +
+  labs(
+    title = "USER TYPE DISTRIBUTION\nMember vs Casual Users"
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5, margin = margin(b = 40)),
+    legend.position = "none",
+    plot.margin = margin(t = 70, r = 35, b = 15, l = 35)
+  )
+
+# Station efficiency bar chart
+kpi_plot3 <- ggplot(data.frame(
+  category = factor(c("Min", "Avg", "Max"), levels = c("Min", "Avg", "Max")),
+  value = c(min_station, round(efficiency_per_station), max_station)
+), aes(x = category, y = value, fill = category)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = format(value, big.mark = ",")), 
+            vjust = -0.5, size = 6, fontface = "bold") +
+  scale_fill_manual(values = divvy_colors[4:6]) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    title = "STATION EFFICIENCY\nMin/Average/Max Rides per Station",
+    x = NULL,
+    y = "Rides per Station"
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5, margin = margin(b = 40)),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 14),
+    legend.position = "none",
+    plot.margin = margin(t = 70, r = 35, b = 15, l = 35)
+  )
+
+# User satisfaction bar chart
+kpi_plot4 <- ggplot(data.frame(
+  category = "Satisfaction",
+  value = satisfaction_rate
+), aes(x = category, y = value)) +
+  geom_col(fill = divvy_colors[7], alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = paste0(round(value, 1), "%")), 
+            vjust = -0.5, size = 6, fontface = "bold") +
+  labs(
+    title = "USER SATISFACTION RATE\nSatisfaction Percentage",
+    x = NULL,
+    y = "Percentage (%)"
+  ) +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5, margin = margin(b = 40)),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 14),
+    plot.margin = margin(t = 70, r = 35, b = 15, l = 35)
+  )
+
+# Combine all KPI plots with significantly improved spacing and larger size
+library(gridExtra)
+kpi_dashboard <- grid.arrange(
+  kpi_plot1, kpi_plot2, kpi_plot3, kpi_plot4,
+  ncol = 2,
+  top = textGrob("DIVVY BIKE SHARE - STRATEGIC KEY PERFORMANCE INDICATORS\nExecutive Dashboard for Business Decision Making", 
+                 gp = gpar(fontsize = 24, fontface = "bold")),
+  padding = unit(6, "lines"),
+  heights = c(1.4, 1.4),
+  widths = c(1, 1)
+)
+
+print(kpi_dashboard)
+```
+
+# TEMPORAL ANALYSIS
+
+## Usage Patterns by Hour of Day
+
+```{r hourly-analysis}
+# Hourly analysis
+hourly_data <- df %>%
+  group_by(start_hour) %>%
+  summarise(
+    total_rides = n(),
+    member_ratio = mean(is_member),
+    avg_duration = mean(duration_min)
+  ) %>%
+  ungroup()
+
+# Hourly usage plot
+hourly_plot <- ggplot(hourly_data, aes(x = start_hour, y = total_rides)) +
+  geom_line(color = divvy_colors[1], linewidth = 2) +
+  geom_point(color = divvy_colors[1], size = 4) +
+  geom_area(fill = divvy_colors[1], alpha = 0.3) +
+  geom_text(aes(label = format(total_rides, big.mark = ",")), 
+            vjust = -0.5, size = 3, fontface = "bold") +
+  labs(
+    title = "HOURLY RIDES DISTRIBUTION\nDaily Usage Patterns and Peak Hours Analysis",
+    x = "Hour of Day",
+    y = "Number of Rides"
+  ) +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  scale_y_continuous(labels = comma) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5, margin = margin(b = 25)),
+    plot.subtitle = element_text(size = 12, color = "gray50"),
+    plot.margin = margin(t = 40, r = 20, b = 10, l = 20)
+  )
+
+print(hourly_plot)
+```
+
+## Member Proportion by Hour
+
+```{r member-ratio-hourly}
+# Member proportion plot
+member_plot <- ggplot(hourly_data, aes(x = start_hour, y = member_ratio * 100)) +
+  geom_col(fill = divvy_colors[2], alpha = 0.8) +
+  geom_text(aes(label = paste0(round(member_ratio * 100, 1), "%")), 
+            vjust = -0.5, size = 3, fontface = "bold") +
+  labs(
+    title = "MEMBER VS CASUAL USER DISTRIBUTION BY HOUR\nMember Engagement Patterns Throughout the Day",
+    x = "Hour of Day",
+    y = "Member Percentage (%)"
+  ) +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  scale_y_continuous(limits = c(0, max(hourly_data$member_ratio * 100) * 1.1)) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 12, color = "gray50"),
+    plot.margin = margin(t = 30, r = 15, b = 8, l = 15)
+  )
+
+print(member_plot)
+```
+
+## Patterns by Day of Week
+
+```{r daily-pattern}
+# Daily analysis
+daily_data <- df %>%
+  group_by(day_of_week) %>%
+  summarise(
+    total_rides = n(),
+    member_ratio = mean(is_member),
+    avg_duration = mean(duration_min)
+  ) %>%
+  ungroup()
+
+# Daily rides plot
+daily_plot <- ggplot(daily_data, aes(x = day_of_week, y = total_rides, fill = day_of_week)) +
+  geom_col(alpha = 0.8) +
+  geom_text(aes(label = format(total_rides, big.mark = ",")), 
+            vjust = -0.5, size = 3, fontface = "bold") +
+  scale_fill_manual(values = divvy_colors) +
+  labs(
+    title = "WEEKLY RIDES DISTRIBUTION\nBusiness Day vs Weekend Usage Patterns",
+    x = "Day of Week",
+    y = "Number of Rides"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 12, color = "gray50"),
+    legend.position = "none",
+    plot.margin = margin(t = 30, r = 15, b = 8, l = 15)
+  )
+
+print(daily_plot)
+```
+
+# USER ANALYSIS
+
+## User Type Distribution
+
+```{r user-analysis}
+# User type analysis
+user_analysis <- df %>%
+  group_by(member_casual) %>%
+  summarise(
+    total_rides = n(),
+    avg_duration = mean(duration_min),
+    median_duration = median(duration_min),
+    total_hours = sum(duration_min) / 60
+  ) %>%
+  ungroup() %>%
+  mutate(
+    percentage = total_rides / sum(total_rides) * 100,
+    label = paste0(round(percentage, 1), "%")
+  )
+
+# Distribution plot
+user_dist_plot <- ggplot(user_analysis, aes(x = "", y = total_rides, fill = member_casual)) +
+  geom_bar(stat = "identity", width = 1, alpha = 0.8) +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = paste0(format(total_rides, big.mark = ","), "\n", label)), 
+            position = position_stack(vjust = 0.5), 
+            color = "white", fontface = "bold", size = 5) +
+  scale_fill_manual(values = divvy_colors[1:2]) +
+  labs(
+    title = "USER TYPE DISTRIBUTION\nMember vs Casual User Market Share Analysis",
+    fill = "User Type"
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 12, color = "gray50", hjust = 0.5),
+    legend.position = "bottom",
+    plot.margin = margin(t = 30, r = 15, b = 8, l = 15)
+  )
+
+print(user_dist_plot)
+```
+
+## Duration Comparison by User Type
+
+```{r duration-comparison}
+# Duration plot
+duration_plot <- ggplot(user_analysis, aes(x = member_casual, y = avg_duration, fill = member_casual)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = paste0(round(avg_duration, 1), " min")), 
+            vjust = -0.5, size = 4, fontface = "bold") +
+  scale_fill_manual(values = divvy_colors[1:2]) +
+  labs(
+    title = "AVERAGE TRIP DURATION BY USER TYPE\nMember vs Casual User Trip Length Analysis",
+    x = "User Type",
+    y = "Average Duration (minutes)"
+  ) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 12, color = "gray50"),
+    legend.position = "none",
+    plot.margin = margin(t = 30, r = 15, b = 8, l = 15)
+  )
+
+print(duration_plot)
+```
+
+## Hourly Pattern by User Type
+
+```{r hourly-by-user}
+# Hourly analysis by user type
+hourly_by_user <- df %>%
+  group_by(start_hour, member_casual) %>%
+  summarise(total_rides = n(), .groups = "drop") %>%
+  ungroup()
+
+hourly_user_plot <- ggplot(hourly_by_user, aes(x = start_hour, y = total_rides, color = member_casual)) +
+  geom_line(linewidth = 2) +
+  geom_point(size = 3) +
+  scale_color_manual(values = divvy_colors[1:2]) +
+  labs(
+    title = "HOURLY USAGE PATTERNS BY USER TYPE\nMember vs Casual User Behavior Comparison",
+    x = "Hour of Day",
+    y = "Number of Rides",
+    color = "User Type"
+  ) +
+  scale_x_continuous(breaks = seq(0, 23, 2)) +
+  scale_y_continuous(labels = comma) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 12, color = "gray50"),
+    plot.margin = margin(t = 30, r = 15, b = 8, l = 15)
+  )
+
+print(hourly_user_plot)
+```
+
+# STATION ANALYSIS
+
+## Top 10 Most Popular Stations
+
+```{r station-analysis}
+# Filter real stations
+real_stations_start <- df %>%
+  filter(start_station_name != "Unknown") %>%
+  count(start_station_name, sort = TRUE) %>%
+  head(10)
+
+real_stations_end <- df %>%
+  filter(end_station_name != "Unknown") %>%
+  count(end_station_name, sort = TRUE) %>%
+  head(10)
+
+# Start stations plot
+start_stations_plot <- ggplot(real_stations_start, aes(x = reorder(start_station_name, n), y = n)) +
+  geom_col(fill = divvy_colors[1], alpha = 0.8) +
+  geom_text(aes(label = format(n, big.mark = ",")), 
+            hjust = -0.2, size = 4, fontface = "bold") +
+  coord_flip() +
+  labs(
+    title = "TOP 10 MOST POPULAR START STATIONS\nHigh-Demand Origin Points for Bike Trips",
+    x = NULL,
+    y = "Number of Rides"
+  ) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 10, color = "gray50"),
+    axis.text.y = element_text(size = 10),
+    plot.margin = margin(t = 35, r = 20, b = 8, l = 20)
+  )
+
+print(start_stations_plot)
+```
+
+## Top 10 Destination Stations
+
+```{r end-stations}
+# End stations plot
+end_stations_plot <- ggplot(real_stations_end, aes(x = reorder(end_station_name, n), y = n)) +
+  geom_col(fill = divvy_colors[2], alpha = 0.8) +
+  geom_text(aes(label = format(n, big.mark = ",")), 
+            hjust = -0.2, size = 4, fontface = "bold") +
+  coord_flip() +
+  labs(
+    title = "TOP 10 MOST POPULAR DESTINATION STATIONS\nHigh-Demand End Points for Bike Trips",
+    x = NULL,
+    y = "Number of Rides"
+  ) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 10, color = "gray50"),
+    axis.text.y = element_text(size = 10),
+    plot.margin = margin(t = 35, r = 20, b = 8, l = 20)
+  )
+
+print(end_stations_plot)
+```
+
+## Station Type Distribution
+
+```{r station-types}
+# Station statistics
+total_stations <- n_distinct(df$start_station_name)
+real_stations_count <- n_distinct(df$start_station_name[df$start_station_name != "Unknown"])
+unknown_percentage <- (total_stations - real_stations_count) / total_stations * 100
+
+# Data for plot
+station_types_data <- data.frame(
+  type = c("Real Stations", "Unknown Stations"),
+  count = c(real_stations_count, total_stations - real_stations_count),
+  percentage = c(100 - unknown_percentage, unknown_percentage)
+)
+
+# Distribution plot
+station_types_plot <- ggplot(station_types_data, aes(x = "", y = count, fill = type)) +
+  geom_bar(stat = "identity", width = 1, alpha = 0.8) +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5), 
+            color = "white", fontface = "bold", size = 5) +
+  scale_fill_manual(values = divvy_colors[3:4]) +
+  labs(
+    title = paste0("STATION TYPE DISTRIBUTION\nTotal Network: ", format(total_stations, big.mark = ","), " Stations"),
+    fill = "Station Type"
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5, margin = margin(b = 15)),
+    plot.subtitle = element_text(size = 10, color = "gray50", hjust = 0.5),
+    legend.position = "bottom",
+    plot.margin = margin(t = 25, r = 15, b = 8, l = 15)
+  )
+
+print(station_types_plot)
+```
+
+# TEMPORAL HEATMAP
+
+```{r heatmap}
+# Temporal heatmap
+heatmap_data <- df %>%
+  group_by(start_hour, day_of_week) %>%
+  summarise(total_rides = n(), .groups = "drop") %>%
+  ungroup()
+
+heatmap_plot <- ggplot(heatmap_data, aes(x = day_of_week, y = start_hour, fill = total_rides)) +
+  geom_tile() +
+  scale_fill_viridis_c(name = "Rides", labels = comma) +
+  labs(
+    title = "WEEKLY USAGE HEATMAP\nHour-by-Day Usage Intensity Patterns",
+    x = "Day of Week",
+    y = "Hour of Day"
+  ) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 12, color = "gray50"),
+    plot.margin = margin(t = 30, r = 15, b = 8, l = 15),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(heatmap_plot)
+```
+
+# ADDITIONAL ANALYSES
+
+## Trip Duration Distribution
+
+```{r duration-distribution}
+# Filter reasonable trips for better visualization
+reasonable_rides <- df %>%
+  filter(duration_min <= 120)  # Only trips up to 2 hours
+
+# Duration histogram
+duration_hist <- ggplot(reasonable_rides, aes(x = duration_min)) +
+  geom_histogram(bins = 50, fill = divvy_colors[1], alpha = 0.7) +
+  labs(
+    title = "TRIP DURATION DISTRIBUTION\nFrequency Analysis of Trip Lengths (Up to 2 Hours)",
+    x = "Duration (minutes)",
+    y = "Frequency"
+  ) +
+  scale_x_continuous(breaks = seq(0, 120, 20)) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 12, color = "gray50"),
+    plot.margin = margin(t = 30, r = 15, b = 8, l = 15)
+  )
+
+print(duration_hist)
+```
+
+## Monthly Analysis
+
+```{r monthly-analysis}
+# Monthly analysis
+monthly_data <- df %>%
+  group_by(month) %>%
+  summarise(
+    total_rides = n(),
+    member_ratio = mean(is_member),
+    avg_duration = mean(duration_min)
+  ) %>%
+  ungroup()
+
+# Monthly rides plot
+monthly_plot <- ggplot(monthly_data, aes(x = month, y = total_rides, fill = month)) +
+  geom_col(alpha = 0.8) +
+  geom_text(aes(label = format(total_rides, big.mark = ",")), 
+            vjust = -0.5, size = 3, fontface = "bold") +
+  scale_fill_manual(values = divvy_colors) +
+  labs(
+    title = "MONTHLY RIDES DISTRIBUTION\nSeasonal Usage Patterns Throughout the Year",
+    x = "Month",
+    y = "Number of Rides"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", margin = margin(b = 20)),
+    plot.subtitle = element_text(size = 12, color = "gray50"),
+    legend.position = "none",
+    plot.margin = margin(t = 30, r = 15, b = 8, l = 15)
+  )
+
+print(monthly_plot)
+```
+
+# CONCLUSIONS AND RECOMMENDATIONS
+
+## Key Conclusions
+
+1.  **Intensive System Usage**: The Divvy system shows intensive usage with over 5.4 million trips analyzed.
+
+2.  **Clear Work Pattern**: There is a clear work usage pattern with peaks during work hours (7-9 AM and 5-7 PM).
+
+3.  **Member Dominance**: Member users represent the majority of usage, with shorter and more regular trip patterns.
+
+4.  **Seasonality**: Weekends show a more recreational and distributed usage pattern.
+
+5.  **Geographic Concentration**: Downtown stations are the most utilized.
+
+## Strategic Recommendations
+
+1.  **Fleet Expansion**: Expand the bike fleet at high-demand stations during peak hours.
+
+2.  **Conversion Campaigns**: Implement marketing campaigns to convert casual users to members.
+
+3.  **Distribution Optimization**: Optimize bike distribution according to identified temporal patterns.
+
+4.  **New Stations**: Develop new stations in identified growth areas.
+
+5.  **Dynamic Pricing**: Consider dynamic pricing to balance demand during peak hours.
+
+------------------------------------------------------------------------
+
+```{r save-figures, echo=FALSE, include=FALSE}
+# =============================================================================
+# SAVE FIGURES TO ORGANIZED FOLDERS
+# =============================================================================
+
+# Create output directories if they don't exist
+output_directories <- c(
+  "outputs/kpi_dashboard",
+  "outputs/temporal_analysis",
+  "outputs/user_analysis", 
+  "outputs/station_analysis",
+  "outputs/additional_insights"
+)
+
+for (dir in output_directories) {
+  if (!dir.exists(dir)) {
+    dir.create(dir, recursive = TRUE)
+  }
+}
+
+# Save KPI Dashboard
+ggsave("outputs/kpi_dashboard/kpi_strategic.png", 
+       plot = kpi_dashboard, 
+       width = 16, height = 20, dpi = 300)
+
+# Save Temporal Analysis Figures
+ggsave("outputs/temporal_analysis/hourly_analysis.png", 
+       plot = hourly_plot, 
+       width = 12, height = 8, dpi = 300)
+
+ggsave("outputs/user_analysis/member_proportion.png", 
+       plot = member_proportion_plot, 
+       width = 12, height = 8, dpi = 300)
+
+ggsave("outputs/temporal_analysis/daily_pattern.png", 
+       plot = daily_pattern_plot, 
+       width = 12, height = 8, dpi = 300)
+
+# Save User Analysis Figures
+ggsave("outputs/user_analysis/user_distribution.png", 
+       plot = user_dist_plot, 
+       width = 12, height = 8, dpi = 300)
+
+ggsave("outputs/user_analysis/duration_comparison.png", 
+       plot = duration_plot, 
+       width = 12, height = 8, dpi = 300)
+
+ggsave("outputs/user_analysis/hourly_by_user.png", 
+       plot = hourly_user_plot, 
+       width = 12, height = 8, dpi = 300)
+
+# Save Station Analysis Figures
+ggsave("outputs/station_analysis/start_stations.png", 
+       plot = start_stations_plot, 
+       width = 12, height = 8, dpi = 300)
+
+ggsave("outputs/station_analysis/end_stations.png", 
+       plot = end_stations_plot, 
+       width = 12, height = 8, dpi = 300)
+
+ggsave("outputs/station_analysis/station_types.png", 
+       plot = station_types_plot, 
+       width = 12, height = 8, dpi = 300)
+
+# Save Additional Insights Figures
+ggsave("outputs/additional_insights/heatmap.png", 
+       plot = heatmap_plot, 
+       width = 12, height = 8, dpi = 300)
+
+ggsave("outputs/additional_insights/duration_distribution.png", 
+       plot = duration_hist, 
+       width = 12, height = 8, dpi = 300)
+
+ggsave("outputs/temporal_analysis/monthly_analysis.png", 
+       plot = monthly_plot, 
+       width = 12, height = 8, dpi = 300)
+
+cat("All figures saved to organized thematic folders.\n")
+```
+
+```{r report-footer, echo=FALSE}
+cat("**Report generated on", format(Sys.Date(), "%B %d, %Y"), "by Kevin Galeano**\n\n")
+cat("**Data Analysis Team - Divvy Bike Share**")
+```

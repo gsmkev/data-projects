@@ -1,0 +1,18 @@
+# =============================================================================
+# DIVVY BIKE SHARE ANALYSIS - PYTHON DEPENDENCIES
+# Professional data analysis requirements
+# =============================================================================
+
+# Core data manipulation and analysis
+pandas
+numpy
+
+# Statistical visualization
+matplotlib
+seaborn
+
+# Data processing utilities
+datetime
+warnings
+os
+openpyxl
